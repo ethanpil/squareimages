@@ -191,6 +191,12 @@
             font-size: 16px;
         }
 
+        #clearBtn {
+            background-color: #f44336;
+            margin-top: 10px;
+            width: 100%;
+        }
+
         .status {
             margin-top: 10px;
             padding: 10px;
@@ -275,6 +281,7 @@
         </div>
 
         <button id="downloadBtn" disabled>Download Processed Image</button>
+        <button id="clearBtn">Clear</button>
         
         <div id="status" class="status"></div>
     </div>
@@ -294,6 +301,7 @@
         const dimensionsText = document.getElementById('dimensionsText');
         const filenameInput = document.getElementById('filename');
         const imageInfo = document.querySelector('.image-info');
+        const clearBtn = document.getElementById('clearBtn');
 
         let processedImageData = null;
 
@@ -482,8 +490,28 @@
             }
         }
 
+        function clearCanvas() {
+            if (confirm('This action will remove the image and reset everything to default values. Continue?')) {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                canvas.style.display = 'none';
+                placeholder.style.display = 'block';
+                imageInfo.style.display = 'none';
+                downloadBtn.disabled = true;
+
+                imageUrlInput.value = '';
+                filenameInput.value = '';
+                maxPixelsInput.value = '1280';
+                paddingPixelsInput.value = '20';
+                jpegQualityInput.value = '88';
+                dimensionsText.textContent = '-';
+
+                statusDiv.className = 'status';
+            }
+        }
+
         maxPixelsInput.addEventListener('change', reprocessIfImageLoaded);
         paddingPixelsInput.addEventListener('change', reprocessIfImageLoaded);
+        clearBtn.addEventListener('click', clearCanvas);
     </script>
 </body>
 </html>
