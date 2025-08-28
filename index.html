@@ -450,11 +450,11 @@
                 a.href = url;
                 
                 // Use custom filename if provided, otherwise use default
-                const customFilename = filenameInput.value.trim();
+                 //sanitize filename - replaces non alphanumeric and make lower case
+                const customFilename = filenameInput.value.trim().replace(/[^a-z0-9]/gi, '_').toLowerCase();
                 let filename;
                 if (customFilename) {
-                    //sanitize filename - replaces non alphanumeric and make lower case
-                    customFilename = customFilename.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+                    customFilename = customFilename
                     // Ensure .jpg extension
                     filename = customFilename.endsWith('.jpg') || customFilename.endsWith('.jpeg') 
                         ? customFilename 
