@@ -453,6 +453,8 @@
                 const customFilename = filenameInput.value.trim();
                 let filename;
                 if (customFilename) {
+                    //sanitize filename - replaces non alphanumeric and make lower case
+                    customFilename = customFilename.replace(/[^a-z0-9]/gi, '_').toLowerCase();
                     // Ensure .jpg extension
                     filename = customFilename.endsWith('.jpg') || customFilename.endsWith('.jpeg') 
                         ? customFilename 
