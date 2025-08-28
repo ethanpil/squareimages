@@ -1,4 +1,4 @@
-This is my one shot prompt to create this application.
+This is my one shot prompt to create this application in Claude Opus 4.1
 
 ````
 
@@ -27,5 +27,13 @@ As soon as the image is loaded into the application and shown on the canvas, beg
 Under the canvas add a full width download button to download the final result and save to the local computer as a jpg file with the quality pulled from the "JPEG Quality" input.
 
 
+
+````
+
+One additional prompt after first result:
+
+
+````
+add some information above the canvas with the final dimensions of the image. for example 1280x1280. Also add a filename input box to the right of the dimensions. Leave it blank and use the existing default filename value if the filename is blank.
 
 ````
