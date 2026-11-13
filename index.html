@@ -182,12 +182,41 @@
             margin-left: 6px;
         }
 
+        .orient-row {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .orient-row .orient-label {
+            font-size: 14px;
+            font-weight: 500;
+            color: #555;
+            margin-right: 4px;
+        }
+
+        .small-btn {
+            padding: 6px 14px;
+            background: #757575;
+            font-size: 13px;
+        }
+
+        .small-btn:hover {
+            background: #616161;
+        }
+
+        .small-btn:disabled {
+            background: #ccc;
+        }
+
         .adjust-grid {
             display: grid;
-            grid-template-columns: repeat(3, 1fr) auto;
-            gap: 16px;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 12px 16px;
             align-items: end;
-            margin-top: 10px;
+            margin-top: 12px;
         }
 
         .adjust-item label {
@@ -208,17 +237,7 @@
         }
 
         #resetAdjustBtn {
-            padding: 6px 14px;
-            background: #757575;
-            font-size: 13px;
-        }
-
-        #resetAdjustBtn:hover {
-            background: #616161;
-        }
-
-        #resetAdjustBtn:disabled {
-            background: #ccc;
+            justify-self: end;
         }
 
         #canvas-container {
@@ -330,16 +349,18 @@
                 grid-template-columns: 1fr;
                 gap: 10px;
             }
-        }
-
-        @media (min-width: 601px) and (max-width: 760px) {
-            .adjust-grid {
-                grid-template-columns: repeat(3, 1fr);
-            }
 
             #resetAdjustBtn {
+                justify-self: stretch;
+            }
+
+            .orient-row {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+            }
+
+            .orient-row .orient-label {
                 grid-column: 1 / -1;
-                justify-self: end;
             }
         }
     </style>
@@ -385,6 +406,13 @@
             </div>
             <details class="adjustments" id="adjustments">
                 <summary>Adjustments<span class="adjust-summary-values" id="adjustSummary"></span></summary>
+                <div class="orient-row">
+                    <span class="orient-label">Orientation</span>
+                    <button type="button" class="small-btn" id="rotateLeftBtn">Rotate Left</button>
+                    <button type="button" class="small-btn" id="rotateRightBtn">Rotate Right</button>
+                    <button type="button" class="small-btn toggle-btn" id="flipHBtn">Flip Horizontal</button>
+                    <button type="button" class="small-btn toggle-btn" id="flipVBtn">Flip Vertical</button>
+                </div>
                 <div class="adjust-grid">
                     <div class="adjust-item">
                         <label for="brightness">Brightness <span class="adjust-value" id="brightnessValue">0</span></label>
@@ -398,7 +426,15 @@
                         <label for="saturation">Saturation <span class="adjust-value" id="saturationValue">0</span></label>
                         <input type="range" id="saturation" min="-100" max="100" value="0" step="1" title="Double-click to reset">
                     </div>
-                    <button id="resetAdjustBtn" disabled>Reset</button>
+                    <div class="adjust-item">
+                        <label for="whiten">Whiten Background <span class="adjust-value" id="whitenValue">0</span></label>
+                        <input type="range" id="whiten" min="0" max="100" value="0" step="1" title="Turns near-white pixels pure white. Double-click to reset">
+                    </div>
+                    <div class="adjust-item">
+                        <label for="sharpen">Sharpen <span class="adjust-value" id="sharpenValue">0</span></label>
+                        <input type="range" id="sharpen" min="0" max="100" value="0" step="1" title="Double-click to reset">
+                    </div>
+                    <button type="button" class="small-btn" id="resetAdjustBtn" disabled>Reset All</button>
                 </div>
             </details>
         </div>
@@ -442,13 +478,28 @@
 
         const adjustSummary = document.getElementById('adjustSummary');
         const resetAdjustBtn = document.getElementById('resetAdjustBtn');
-        const adjustInputs = {
-            brightness: document.getElementById('brightness'),
-            contrast: document.getElementById('contrast'),
-            saturation: document.getElementById('saturation')
-        };
+        const rotateLeftBtn = document.getElementById('rotateLeftBtn');
+        const rotateRightBtn = document.getElementById('rotateRightBtn');
+        const flipHBtn = document.getElementById('flipHBtn');
+        const flipVBtn = document.getElementById('flipVBtn');
 
-        let originalImageSrc = null;
+        // Slider adjustments. Signed sliders run -100..100, the others 0..100.
+        const ADJUSTMENTS = {
+            brightness: { label: 'Brightness', signed: true },
+            contrast: { label: 'Contrast', signed: true },
+            saturation: { label: 'Saturation', signed: true },
+            whiten: { label: 'Whiten Background', signed: false },
+            sharpen: { label: 'Sharpen', signed: false }
+        };
+        const adjustInputs = {};
+        Object.keys(ADJUSTMENTS).forEach(function(key) {
+            adjustInputs[key] = document.getElementById(key);
+        });
+
+        // Orientation is per image and resets when a new image is loaded
+        const orientation = { rotation: 0, flipH: false, flipV: false };
+
+        let originalImage = null;
         // Scaled, unadjusted image pixels plus where they sit on the square canvas.
         // Adjustments are re-applied from this so slider changes are fast and lossless.
         let baseLayer = null;
@@ -514,7 +565,10 @@
 
         function processImage(img) {
             try {
-                const source = clipWhitespaceBtn.classList.contains('active') ? clipWhitespace(img) : img;
+                let source = orientSource(img);
+                if (clipWhitespaceBtn.classList.contains('active')) {
+                    source = clipWhitespace(source);
+                }
 
                 const maxPixels = parseInt(maxPixelsInput.value) || 1280;
                 const padding = parseInt(paddingPixelsInput.value) || 20;
@@ -557,6 +611,8 @@
                     canvas: layer,
                     pixels: layerCtx.getImageData(0, 0, scaledWidth, scaledHeight),
                     output: null,
+                    scratch: null,
+                    hsum: null,
                     x: x,
                     y: y,
                     size: finalSize
@@ -584,16 +640,37 @@
         }
 
         function getAdjustments() {
-            return {
-                brightness: parseInt(adjustInputs.brightness.value) || 0,
-                contrast: parseInt(adjustInputs.contrast.value) || 0,
-                saturation: parseInt(adjustInputs.saturation.value) || 0
-            };
+            const adj = {};
+            Object.keys(adjustInputs).forEach(function(key) {
+                adj[key] = parseInt(adjustInputs[key].value) || 0;
+            });
+            return adj;
         }
 
-        // Same math as the CSS brightness(), contrast() and saturate() filters,
-        // applied in that order. Slider values of -100..100 map to factors of 0..2.
-        function applyAdjustments(src, dst, adj) {
+        function isNeutral(adj) {
+            return Object.keys(adj).every(function(key) { return adj[key] === 0; });
+        }
+
+        function orientSource(img) {
+            const { rotation, flipH, flipV } = orientation;
+            if (rotation === 0 && !flipH && !flipV) return img;
+            const swap = rotation % 180 !== 0;
+            const c = document.createElement('canvas');
+            c.width = swap ? img.height : img.width;
+            c.height = swap ? img.width : img.height;
+            const x = c.getContext('2d');
+            x.translate(c.width / 2, c.height / 2);
+            // Flip is applied after rotation, so it always mirrors the image as displayed
+            x.scale(flipH ? -1 : 1, flipV ? -1 : 1);
+            x.rotate(rotation * Math.PI / 180);
+            x.drawImage(img, -img.width / 2, -img.height / 2);
+            return c;
+        }
+
+        // Brightness, contrast and saturation use the same math as the CSS
+        // brightness(), contrast() and saturate() filters, applied in that order.
+        // Slider values of -100..100 map to factors of 0..2.
+        function applyTone(sd, dd, adj) {
             const b = 1 + adj.brightness / 100;
             const c = 1 + adj.contrast / 100;
             const s = 1 + adj.saturation / 100;
@@ -606,8 +683,6 @@
                 lut[i] = v * 255;
             }
 
-            const sd = src.data;
-            const dd = dst.data;
             const doSat = s !== 1;
             for (let i = 0; i < sd.length; i += 4) {
                 let r = lut[sd[i]];
@@ -627,18 +702,94 @@
             }
         }
 
+        // Unsharp mask with a 3x3 box blur, run on the final-size pixels so it
+        // restores the crispness lost when the image is scaled down.
+        function applySharpen(px, w, h, amount, copy, hsum) {
+            copy.set(px);
+            // Horizontal pass: sum of each pixel and its left/right neighbours
+            for (let y = 0; y < h; y++) {
+                const row = y * w;
+                for (let x = 0; x < w; x++) {
+                    const i = (row + x) * 4;
+                    const l = (row + (x > 0 ? x - 1 : x)) * 4;
+                    const r = (row + (x < w - 1 ? x + 1 : x)) * 4;
+                    hsum[i] = copy[l] + copy[i] + copy[r];
+                    hsum[i + 1] = copy[l + 1] + copy[i + 1] + copy[r + 1];
+                    hsum[i + 2] = copy[l + 2] + copy[i + 2] + copy[r + 2];
+                }
+            }
+            // Vertical pass completes the blur, then push each pixel away from it
+            for (let y = 0; y < h; y++) {
+                const up = (y > 0 ? y - 1 : y) * w;
+                const row = y * w;
+                const down = (y < h - 1 ? y + 1 : y) * w;
+                for (let x = 0; x < w; x++) {
+                    const i = (row + x) * 4;
+                    const u = (up + x) * 4;
+                    const d = (down + x) * 4;
+                    for (let c = 0; c < 3; c++) {
+                        const v = copy[i + c];
+                        const blur = (hsum[u + c] + hsum[i + c] + hsum[d + c]) / 9;
+                        px[i + c] = v + (v - blur) * amount;
+                    }
+                }
+            }
+        }
+
+        // Turns near-white pixels pure white (255,255,255), which marketplaces
+        // expect for product backgrounds. A short ramp below the threshold
+        // avoids a hard edge around the product.
+        function applyWhiten(px, strength) {
+            const threshold = 255 - Math.round(strength * 0.6); // 0..100 -> 255..195
+            const feather = Math.max(1, Math.round((255 - threshold) / 3));
+            const low = threshold - feather;
+            for (let i = 0; i < px.length; i += 4) {
+                const r = px[i], g = px[i + 1], b = px[i + 2];
+                const m = r < g ? (r < b ? r : b) : (g < b ? g : b);
+                if (m >= threshold) {
+                    px[i] = px[i + 1] = px[i + 2] = 255;
+                } else if (m > low) {
+                    const k = (m - low) / feather;
+                    px[i] = r + (255 - r) * k;
+                    px[i + 1] = g + (255 - g) * k;
+                    px[i + 2] = b + (255 - b) * k;
+                }
+            }
+        }
+
         function renderAdjusted() {
             if (!baseLayer) return;
             const adj = getAdjustments();
             const layerCtx = baseLayer.canvas.getContext('2d');
 
-            if (adj.brightness === 0 && adj.contrast === 0 && adj.saturation === 0) {
+            if (isNeutral(adj)) {
                 layerCtx.putImageData(baseLayer.pixels, 0, 0);
             } else {
+                const w = baseLayer.pixels.width;
+                const h = baseLayer.pixels.height;
                 if (!baseLayer.output) {
-                    baseLayer.output = layerCtx.createImageData(baseLayer.pixels.width, baseLayer.pixels.height);
+                    baseLayer.output = layerCtx.createImageData(w, h);
                 }
-                applyAdjustments(baseLayer.pixels, baseLayer.output, adj);
+                const src = baseLayer.pixels.data;
+                const out = baseLayer.output.data;
+
+                // Order: tone, then sharpen, then whiten so the background ends up
+                // pure white even after sharpening
+                if (adj.brightness || adj.contrast || adj.saturation) {
+                    applyTone(src, out, adj);
+                } else {
+                    out.set(src);
+                }
+                if (adj.sharpen) {
+                    if (!baseLayer.scratch) {
+                        baseLayer.scratch = new Uint8ClampedArray(out.length);
+                        baseLayer.hsum = new Uint16Array(out.length);
+                    }
+                    applySharpen(out, w, h, adj.sharpen / 100 * 1.5, baseLayer.scratch, baseLayer.hsum);
+                }
+                if (adj.whiten) {
+                    applyWhiten(out, adj.whiten);
+                }
                 layerCtx.putImageData(baseLayer.output, 0, 0);
             }
 
@@ -656,27 +807,43 @@
             });
         }
 
-        function formatAdjust(v) {
-            return v > 0 ? '+' + v : String(v);
+        function formatAdjust(key, v) {
+            return ADJUSTMENTS[key].signed && v > 0 ? '+' + v : String(v);
+        }
+
+        function orientationChanged() {
+            return orientation.rotation !== 0 || orientation.flipH || orientation.flipV;
         }
 
         function updateAdjustLabels() {
             const adj = getAdjustments();
             const parts = [];
+            if (orientation.rotation) parts.push('Rotated ' + orientation.rotation + '\u00B0');
+            if (orientation.flipH) parts.push('Flipped horizontally');
+            if (orientation.flipV) parts.push('Flipped vertically');
             Object.keys(adjustInputs).forEach(function(key) {
-                document.getElementById(key + 'Value').textContent = formatAdjust(adj[key]);
+                document.getElementById(key + 'Value').textContent = formatAdjust(key, adj[key]);
                 if (adj[key] !== 0) {
-                    parts.push(key.charAt(0).toUpperCase() + key.slice(1) + ' ' + formatAdjust(adj[key]));
+                    parts.push(ADJUSTMENTS[key].label + ' ' + formatAdjust(key, adj[key]));
                 }
             });
             adjustSummary.textContent = parts.length ? '(' + parts.join(', ') + ')' : '';
             resetAdjustBtn.disabled = parts.length === 0;
+            flipHBtn.classList.toggle('active', orientation.flipH);
+            flipVBtn.classList.toggle('active', orientation.flipV);
+        }
+
+        function resetOrientation() {
+            orientation.rotation = 0;
+            orientation.flipH = false;
+            orientation.flipV = false;
         }
 
         function resetAdjustments() {
             Object.keys(adjustInputs).forEach(function(key) {
                 adjustInputs[key].value = 0;
             });
+            resetOrientation();
             updateAdjustLabels();
         }
 
@@ -685,7 +852,9 @@
             img.crossOrigin = 'anonymous';
 
             img.onload = function() {
-                originalImageSrc = src;
+                originalImage = img;
+                resetOrientation();
+                updateAdjustLabels();
                 processImage(img);
             };
 
@@ -802,13 +971,8 @@
 
         // Re-process on setting change
         function reprocessIfImageLoaded() {
-            if (originalImageSrc) {
-                const tempImg = new Image();
-                tempImg.crossOrigin = 'anonymous';
-                tempImg.onload = function() {
-                    processImage(tempImg);
-                };
-                tempImg.src = originalImageSrc;
+            if (originalImage) {
+                processImage(originalImage);
             }
         }
 
@@ -827,7 +991,7 @@
                 paddingPixelsInput.value = '20';
                 jpegQualityInput.value = '88';
                 dimensionsText.textContent = '-';
-                originalImageSrc = null;
+                originalImage = null;
                 baseLayer = null;
                 clipWhitespaceBtn.classList.remove('active');
                 resetAdjustments();
@@ -857,9 +1021,33 @@
             });
         });
 
+        function changeOrientation(fn) {
+            fn();
+            updateAdjustLabels();
+            reprocessIfImageLoaded();
+        }
+
+        rotateLeftBtn.addEventListener('click', function() {
+            changeOrientation(function() { orientation.rotation = (orientation.rotation + 270) % 360; });
+        });
+        rotateRightBtn.addEventListener('click', function() {
+            changeOrientation(function() { orientation.rotation = (orientation.rotation + 90) % 360; });
+        });
+        flipHBtn.addEventListener('click', function() {
+            changeOrientation(function() { orientation.flipH = !orientation.flipH; });
+        });
+        flipVBtn.addEventListener('click', function() {
+            changeOrientation(function() { orientation.flipV = !orientation.flipV; });
+        });
+
         resetAdjustBtn.addEventListener('click', function() {
+            const hadOrientation = orientationChanged();
             resetAdjustments();
-            renderAdjusted();
+            if (hadOrientation) {
+                reprocessIfImageLoaded();
+            } else {
+                renderAdjusted();
+            }
         });
     </script>
 </body>
