@@ -162,6 +162,65 @@
             flex: 1;
         }
 
+        .adjustments {
+            margin-top: 12px;
+            padding-top: 10px;
+            border-top: 1px solid #e0e0e0;
+        }
+
+        .adjustments summary {
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            color: #333;
+            user-select: none;
+        }
+
+        .adjustments summary .adjust-summary-values {
+            font-weight: 400;
+            color: #777;
+            margin-left: 6px;
+        }
+
+        .adjust-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr) auto;
+            gap: 16px;
+            align-items: end;
+            margin-top: 10px;
+        }
+
+        .adjust-item label {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 2px;
+        }
+
+        .adjust-item .adjust-value {
+            color: #777;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .adjust-item input[type="range"] {
+            width: 100%;
+            accent-color: #4CAF50;
+            cursor: pointer;
+        }
+
+        #resetAdjustBtn {
+            padding: 6px 14px;
+            background: #757575;
+            font-size: 13px;
+        }
+
+        #resetAdjustBtn:hover {
+            background: #616161;
+        }
+
+        #resetAdjustBtn:disabled {
+            background: #ccc;
+        }
+
         #canvas-container {
             width: 100%;
             aspect-ratio: 1;
@@ -266,6 +325,22 @@
             .settings-grid {
                 grid-template-columns: 1fr;
             }
+
+            .adjust-grid {
+                grid-template-columns: 1fr;
+                gap: 10px;
+            }
+        }
+
+        @media (min-width: 601px) and (max-width: 760px) {
+            .adjust-grid {
+                grid-template-columns: repeat(3, 1fr);
+            }
+
+            #resetAdjustBtn {
+                grid-column: 1 / -1;
+                justify-self: end;
+            }
         }
     </style>
 </head>
@@ -308,6 +383,24 @@
                     <input type="text" id="filename" placeholder="Leave blank for auto-generated name">
                 </div>
             </div>
+            <details class="adjustments" id="adjustments">
+                <summary>Adjustments<span class="adjust-summary-values" id="adjustSummary"></span></summary>
+                <div class="adjust-grid">
+                    <div class="adjust-item">
+                        <label for="brightness">Brightness <span class="adjust-value" id="brightnessValue">0</span></label>
+                        <input type="range" id="brightness" min="-100" max="100" value="0" step="1" title="Double-click to reset">
+                    </div>
+                    <div class="adjust-item">
+                        <label for="contrast">Contrast <span class="adjust-value" id="contrastValue">0</span></label>
+                        <input type="range" id="contrast" min="-100" max="100" value="0" step="1" title="Double-click to reset">
+                    </div>
+                    <div class="adjust-item">
+                        <label for="saturation">Saturation <span class="adjust-value" id="saturationValue">0</span></label>
+                        <input type="range" id="saturation" min="-100" max="100" value="0" step="1" title="Double-click to reset">
+                    </div>
+                    <button id="resetAdjustBtn" disabled>Reset</button>
+                </div>
+            </details>
         </div>
 
         <div id="canvas-container">
@@ -347,8 +440,19 @@
         const copyBtn = document.getElementById('copyBtn');
         const clipWhitespaceBtn = document.getElementById('clipWhitespaceBtn');
 
-        let processedImageData = null;
+        const adjustSummary = document.getElementById('adjustSummary');
+        const resetAdjustBtn = document.getElementById('resetAdjustBtn');
+        const adjustInputs = {
+            brightness: document.getElementById('brightness'),
+            contrast: document.getElementById('contrast'),
+            saturation: document.getElementById('saturation')
+        };
+
         let originalImageSrc = null;
+        // Scaled, unadjusted image pixels plus where they sit on the square canvas.
+        // Adjustments are re-applied from this so slider changes are fast and lossless.
+        let baseLayer = null;
+        let renderPending = false;
 
         function showStatus(message, isError = false) {
             statusDiv.textContent = message;
@@ -435,18 +539,31 @@
                 canvas.width = finalSize;
                 canvas.height = finalSize;
 
-                // Fill with white background
-                ctx.fillStyle = 'white';
-                ctx.fillRect(0, 0, finalSize, finalSize);
-
                 // Calculate position to center the image
-                const scaledWidth = origWidth * scale;
-                const scaledHeight = origHeight * scale;
-                const x = (finalSize - scaledWidth) / 2;
-                const y = (finalSize - scaledHeight) / 2;
+                const scaledWidth = Math.max(1, Math.round(origWidth * scale));
+                const scaledHeight = Math.max(1, Math.round(origHeight * scale));
+                const x = Math.round((finalSize - scaledWidth) / 2);
+                const y = Math.round((finalSize - scaledHeight) / 2);
 
-                // Draw the image centered
-                ctx.drawImage(source, x, y, scaledWidth, scaledHeight);
+                // Scale the image onto its own layer so adjustments only touch
+                // the image, never the white square background or padding
+                const layer = document.createElement('canvas');
+                layer.width = scaledWidth;
+                layer.height = scaledHeight;
+                const layerCtx = layer.getContext('2d');
+                layerCtx.drawImage(source, 0, 0, scaledWidth, scaledHeight);
+
+                baseLayer = {
+                    canvas: layer,
+                    pixels: layerCtx.getImageData(0, 0, scaledWidth, scaledHeight),
+                    output: null,
+                    x: x,
+                    y: y,
+                    size: finalSize
+                };
+
+                // Draw the image centered on white, with any adjustments applied
+                renderAdjusted();
 
                 // Show canvas, hide placeholder, show info
                 canvas.style.display = 'block';
@@ -464,6 +581,103 @@
             } catch (error) {
                 showStatus('Error processing image: ' + error.message, true);
             }
+        }
+
+        function getAdjustments() {
+            return {
+                brightness: parseInt(adjustInputs.brightness.value) || 0,
+                contrast: parseInt(adjustInputs.contrast.value) || 0,
+                saturation: parseInt(adjustInputs.saturation.value) || 0
+            };
+        }
+
+        // Same math as the CSS brightness(), contrast() and saturate() filters,
+        // applied in that order. Slider values of -100..100 map to factors of 0..2.
+        function applyAdjustments(src, dst, adj) {
+            const b = 1 + adj.brightness / 100;
+            const c = 1 + adj.contrast / 100;
+            const s = 1 + adj.saturation / 100;
+
+            // Brightness and contrast are per-channel, so precompute them
+            const lut = new Float32Array(256);
+            for (let i = 0; i < 256; i++) {
+                let v = Math.min(1, (i / 255) * b);
+                v = Math.min(1, Math.max(0, (v - 0.5) * c + 0.5));
+                lut[i] = v * 255;
+            }
+
+            const sd = src.data;
+            const dd = dst.data;
+            const doSat = s !== 1;
+            for (let i = 0; i < sd.length; i += 4) {
+                let r = lut[sd[i]];
+                let g = lut[sd[i + 1]];
+                let bl = lut[sd[i + 2]];
+                if (doSat) {
+                    const gray = 0.2126 * r + 0.7152 * g + 0.0722 * bl;
+                    r = gray + (r - gray) * s;
+                    g = gray + (g - gray) * s;
+                    bl = gray + (bl - gray) * s;
+                }
+                // Uint8ClampedArray clamps and rounds on assignment
+                dd[i] = r;
+                dd[i + 1] = g;
+                dd[i + 2] = bl;
+                dd[i + 3] = sd[i + 3];
+            }
+        }
+
+        function renderAdjusted() {
+            if (!baseLayer) return;
+            const adj = getAdjustments();
+            const layerCtx = baseLayer.canvas.getContext('2d');
+
+            if (adj.brightness === 0 && adj.contrast === 0 && adj.saturation === 0) {
+                layerCtx.putImageData(baseLayer.pixels, 0, 0);
+            } else {
+                if (!baseLayer.output) {
+                    baseLayer.output = layerCtx.createImageData(baseLayer.pixels.width, baseLayer.pixels.height);
+                }
+                applyAdjustments(baseLayer.pixels, baseLayer.output, adj);
+                layerCtx.putImageData(baseLayer.output, 0, 0);
+            }
+
+            ctx.fillStyle = 'white';
+            ctx.fillRect(0, 0, baseLayer.size, baseLayer.size);
+            ctx.drawImage(baseLayer.canvas, baseLayer.x, baseLayer.y);
+        }
+
+        function scheduleRender() {
+            if (renderPending) return;
+            renderPending = true;
+            requestAnimationFrame(function() {
+                renderPending = false;
+                renderAdjusted();
+            });
+        }
+
+        function formatAdjust(v) {
+            return v > 0 ? '+' + v : String(v);
+        }
+
+        function updateAdjustLabels() {
+            const adj = getAdjustments();
+            const parts = [];
+            Object.keys(adjustInputs).forEach(function(key) {
+                document.getElementById(key + 'Value').textContent = formatAdjust(adj[key]);
+                if (adj[key] !== 0) {
+                    parts.push(key.charAt(0).toUpperCase() + key.slice(1) + ' ' + formatAdjust(adj[key]));
+                }
+            });
+            adjustSummary.textContent = parts.length ? '(' + parts.join(', ') + ')' : '';
+            resetAdjustBtn.disabled = parts.length === 0;
+        }
+
+        function resetAdjustments() {
+            Object.keys(adjustInputs).forEach(function(key) {
+                adjustInputs[key].value = 0;
+            });
+            updateAdjustLabels();
         }
 
         function loadImage(src) {
@@ -614,7 +828,9 @@
                 jpegQualityInput.value = '88';
                 dimensionsText.textContent = '-';
                 originalImageSrc = null;
+                baseLayer = null;
                 clipWhitespaceBtn.classList.remove('active');
+                resetAdjustments();
 
                 statusDiv.className = 'status';
             }
@@ -626,6 +842,24 @@
         clipWhitespaceBtn.addEventListener('click', function() {
             clipWhitespaceBtn.classList.toggle('active');
             reprocessIfImageLoaded();
+        });
+
+        Object.keys(adjustInputs).forEach(function(key) {
+            const input = adjustInputs[key];
+            input.addEventListener('input', function() {
+                updateAdjustLabels();
+                scheduleRender();
+            });
+            input.addEventListener('dblclick', function() {
+                input.value = 0;
+                updateAdjustLabels();
+                scheduleRender();
+            });
+        });
+
+        resetAdjustBtn.addEventListener('click', function() {
+            resetAdjustments();
+            renderAdjusted();
         });
     </script>
 </body>
