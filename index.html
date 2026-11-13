@@ -197,6 +197,10 @@
             margin-right: 4px;
         }
 
+        .orient-row .angle-item {
+            flex: 1 1 180px;
+        }
+
         .small-btn {
             padding: 6px 14px;
             background: #757575;
@@ -271,6 +275,10 @@
             display: block;
         }
 
+        .actions {
+            margin-bottom: 20px;
+        }
+
         .action-buttons {
             display: flex;
             gap: 10px;
@@ -302,11 +310,17 @@
             width: 100%;
         }
 
+        /* Overlaid on the bottom of the image area so it never shifts the layout */
         .status {
-            margin-top: 10px;
+            position: absolute;
+            left: 10px;
+            right: 10px;
+            bottom: 10px;
             padding: 10px;
             border-radius: 4px;
             font-size: 14px;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+            cursor: pointer;
             display: none;
         }
 
@@ -359,9 +373,11 @@
                 grid-template-columns: 1fr 1fr;
             }
 
-            .orient-row .orient-label {
+            .orient-row .orient-label,
+            .orient-row .angle-item {
                 grid-column: 1 / -1;
             }
+
         }
     </style>
 </head>
@@ -412,6 +428,10 @@
                     <button type="button" class="small-btn" id="rotateRightBtn">Rotate Right</button>
                     <button type="button" class="small-btn toggle-btn" id="flipHBtn">Flip Horizontal</button>
                     <button type="button" class="small-btn toggle-btn" id="flipVBtn">Flip Vertical</button>
+                    <div class="adjust-item angle-item">
+                        <label for="angle">Fine Rotate <span class="adjust-value" id="angleValue">0.0&deg;</span></label>
+                        <input type="range" id="angle" min="-20" max="20" value="0" step="0.1" title="Left of center rotates counterclockwise, right rotates clockwise. Double-click to reset">
+                    </div>
                 </div>
                 <div class="adjust-grid">
                     <div class="adjust-item">
@@ -439,6 +459,14 @@
             </details>
         </div>
 
+        <div class="actions">
+            <div class="action-buttons">
+                <button id="downloadBtn" disabled>Download Processed Image</button>
+                <button id="copyBtn" disabled>Copy to Clipboard</button>
+            </div>
+            <button id="clearBtn">Clear</button>
+        </div>
+
         <div id="canvas-container">
             <div class="placeholder">
                 Drag & drop an image here<br>
@@ -446,15 +474,9 @@
                 or enter URL above
             </div>
             <canvas id="canvas" style="display: none;"></canvas>
+            <div id="status" class="status" title="Click to dismiss"></div>
         </div>
 
-        <div class="action-buttons">
-            <button id="downloadBtn" disabled>Download Processed Image</button>
-            <button id="copyBtn" disabled>Copy to Clipboard</button>
-        </div>
-        <button id="clearBtn">Clear</button>
-        
-        <div id="status" class="status"></div>
     </div>
     <div id="footer">Developed by <a href="http://piliavin.com">Ethan Piliavin</a> in collaboration with AI models. Open source via <a href="https://github.com/ethanpil/squareimages/">GitHub</a>.</div>
     <script>
@@ -497,23 +519,34 @@
         });
 
         // Orientation is per image and resets when a new image is loaded
-        const orientation = { rotation: 0, flipH: false, flipV: false };
+        const angleInput = document.getElementById('angle');
+        const angleValue = document.getElementById('angleValue');
+        const orientation = { rotation: 0, flipH: false, flipV: false, angle: 0 };
 
         let originalImage = null;
         // Scaled, unadjusted image pixels plus where they sit on the square canvas.
         // Adjustments are re-applied from this so slider changes are fast and lossless.
         let baseLayer = null;
         let renderPending = false;
+        let reprocessPending = false;
+
+        let statusTimer = null;
+
+        function hideStatus() {
+            clearTimeout(statusTimer);
+            statusDiv.className = 'status';
+        }
 
         function showStatus(message, isError = false) {
+            clearTimeout(statusTimer);
             statusDiv.textContent = message;
             statusDiv.className = isError ? 'status error' : 'status success';
             if (!isError) {
-                setTimeout(() => {
-                    statusDiv.className = 'status';
-                }, 3000);
+                statusTimer = setTimeout(hideStatus, 3000);
             }
         }
+
+        statusDiv.addEventListener('click', hideStatus);
 
         function clipWhitespace(img) {
             const tmpCanvas = document.createElement('canvas');
@@ -563,19 +596,22 @@
             return outCanvas;
         }
 
-        function processImage(img) {
+        function processImage(img, quiet) {
             try {
-                let source = orientSource(img);
-                if (clipWhitespaceBtn.classList.contains('active')) {
-                    source = clipWhitespace(source);
-                }
+                // Clip Whitespace needs the oriented image at full resolution to find
+                // the edges. Otherwise the orientation is applied while scaling,
+                // which avoids building a large intermediate image.
+                const source = clipWhitespaceBtn.classList.contains('active')
+                    ? clipWhitespace(orientSource(img))
+                    : null;
+                const sourceSize = source || orientedSize(img);
 
                 const maxPixels = parseInt(maxPixelsInput.value) || 1280;
                 const padding = parseInt(paddingPixelsInput.value) || 20;
 
                 // Get original dimensions
-                const origWidth = source.width;
-                const origHeight = source.height;
+                const origWidth = sourceSize.width;
+                const origHeight = sourceSize.height;
 
                 // Step 1: Square the image
                 const maxDim = Math.max(origWidth, origHeight);
@@ -605,7 +641,11 @@
                 layer.width = scaledWidth;
                 layer.height = scaledHeight;
                 const layerCtx = layer.getContext('2d');
-                layerCtx.drawImage(source, 0, 0, scaledWidth, scaledHeight);
+                if (source) {
+                    layerCtx.drawImage(source, 0, 0, scaledWidth, scaledHeight);
+                } else {
+                    drawOriented(layerCtx, img, scaledWidth, scaledHeight);
+                }
 
                 baseLayer = {
                     canvas: layer,
@@ -633,7 +673,13 @@
                 downloadBtn.disabled = false;
                 copyBtn.disabled = false;
 
-                showStatus(`Image processed: ${finalSize}x${finalSize}px`);
+                const message = `Image processed: ${finalSize}x${finalSize}px`;
+                if (!quiet) {
+                    showStatus(message);
+                } else if (statusDiv.classList.contains('success')) {
+                    // Keep a visible message in step with the live preview
+                    statusDiv.textContent = message;
+                }
             } catch (error) {
                 showStatus('Error processing image: ' + error.message, true);
             }
@@ -651,19 +697,49 @@
             return Object.keys(adj).every(function(key) { return adj[key] === 0; });
         }
 
+        function hasOrientation() {
+            return orientation.rotation !== 0 || orientation.flipH || orientation.flipV || orientation.angle !== 0;
+        }
+
+        // Size of the image after rotation and flips. Fine rotation grows the
+        // bounds to fit the rotated corners; the uncovered corners stay
+        // transparent, so they end up white like the rest of the background,
+        // and Clip Whitespace can trim them.
+        function orientedSize(img) {
+            const swap = orientation.rotation % 180 !== 0;
+            const w = swap ? img.height : img.width;
+            const h = swap ? img.width : img.height;
+            if (orientation.angle === 0) return { width: w, height: h };
+            const rad = orientation.angle * Math.PI / 180;
+            const cos = Math.abs(Math.cos(rad));
+            const sin = Math.abs(Math.sin(rad));
+            return { width: Math.ceil(w * cos + h * sin), height: Math.ceil(w * sin + h * cos) };
+        }
+
+        // Draws img with the current orientation, scaled to fill a w x h box
+        function drawOriented(target, img, w, h) {
+            const size = orientedSize(img);
+            target.save();
+            target.imageSmoothingQuality = 'high';
+            target.translate(w / 2, h / 2);
+            target.scale(w / size.width, h / size.height);
+            // Canvas transforms apply to the image bottom-up: first the 90 degree
+            // rotation, then the flip (so it mirrors the image as displayed),
+            // then the fine rotation (positive is clockwise as displayed)
+            target.rotate(orientation.angle * Math.PI / 180);
+            target.scale(orientation.flipH ? -1 : 1, orientation.flipV ? -1 : 1);
+            target.rotate(orientation.rotation * Math.PI / 180);
+            target.drawImage(img, -img.width / 2, -img.height / 2);
+            target.restore();
+        }
+
         function orientSource(img) {
-            const { rotation, flipH, flipV } = orientation;
-            if (rotation === 0 && !flipH && !flipV) return img;
-            const swap = rotation % 180 !== 0;
+            if (!hasOrientation()) return img;
+            const size = orientedSize(img);
             const c = document.createElement('canvas');
-            c.width = swap ? img.height : img.width;
-            c.height = swap ? img.width : img.height;
-            const x = c.getContext('2d');
-            x.translate(c.width / 2, c.height / 2);
-            // Flip is applied after rotation, so it always mirrors the image as displayed
-            x.scale(flipH ? -1 : 1, flipV ? -1 : 1);
-            x.rotate(rotation * Math.PI / 180);
-            x.drawImage(img, -img.width / 2, -img.height / 2);
+            c.width = size.width;
+            c.height = size.height;
+            drawOriented(c.getContext('2d'), img, size.width, size.height);
             return c;
         }
 
@@ -811,8 +887,8 @@
             return ADJUSTMENTS[key].signed && v > 0 ? '+' + v : String(v);
         }
 
-        function orientationChanged() {
-            return orientation.rotation !== 0 || orientation.flipH || orientation.flipV;
+        function formatAngle(a) {
+            return (a > 0 ? '+' : '') + a.toFixed(1) + '\u00B0';
         }
 
         function updateAdjustLabels() {
@@ -821,6 +897,8 @@
             if (orientation.rotation) parts.push('Rotated ' + orientation.rotation + '\u00B0');
             if (orientation.flipH) parts.push('Flipped horizontally');
             if (orientation.flipV) parts.push('Flipped vertically');
+            if (orientation.angle) parts.push('Fine rotate ' + formatAngle(orientation.angle));
+            angleValue.textContent = formatAngle(orientation.angle);
             Object.keys(adjustInputs).forEach(function(key) {
                 document.getElementById(key + 'Value').textContent = formatAdjust(key, adj[key]);
                 if (adj[key] !== 0) {
@@ -837,6 +915,8 @@
             orientation.rotation = 0;
             orientation.flipH = false;
             orientation.flipV = false;
+            orientation.angle = 0;
+            angleInput.value = 0;
         }
 
         function resetAdjustments() {
@@ -996,7 +1076,7 @@
                 clipWhitespaceBtn.classList.remove('active');
                 resetAdjustments();
 
-                statusDiv.className = 'status';
+                hideStatus();
             }
         }
 
@@ -1021,6 +1101,30 @@
             });
         });
 
+        // Slider drags redraw at most once per frame and skip the status message
+        function scheduleReprocess() {
+            if (reprocessPending) return;
+            reprocessPending = true;
+            requestAnimationFrame(function() {
+                reprocessPending = false;
+                if (originalImage) processImage(originalImage, true);
+            });
+        }
+
+        function setAngle(value) {
+            orientation.angle = Math.round((parseFloat(value) || 0) * 10) / 10;
+            updateAdjustLabels();
+            scheduleReprocess();
+        }
+
+        angleInput.addEventListener('input', function() {
+            setAngle(angleInput.value);
+        });
+        angleInput.addEventListener('dblclick', function() {
+            angleInput.value = 0;
+            setAngle(0);
+        });
+
         function changeOrientation(fn) {
             fn();
             updateAdjustLabels();
@@ -1041,7 +1145,7 @@
         });
 
         resetAdjustBtn.addEventListener('click', function() {
-            const hadOrientation = orientationChanged();
+            const hadOrientation = hasOrientation();
             resetAdjustments();
             if (hadOrientation) {
                 reprocessIfImageLoaded();
